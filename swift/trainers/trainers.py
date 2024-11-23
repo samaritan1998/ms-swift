@@ -157,6 +157,7 @@ class Seq2SeqTrainer(PushToMsHubMixin, SwiftMixin, HfSeq2SeqTrainer):
         if loss_name is not None or self.label_smoother is not None and 'labels' in inputs:
             labels = inputs.pop('labels')
 
+        label_bck = inputs['labels']
         loss_kwargs['labels'] = labels
         outputs = model(**inputs)
         # fix https://github.com/huggingface/transformers/issues/34263
@@ -197,6 +198,49 @@ class Seq2SeqTrainer(PushToMsHubMixin, SwiftMixin, HfSeq2SeqTrainer):
         else:
             preds = outputs.logits.argmax(dim=2)[..., :-1] if outputs.logits is not None else None
             labels = labels[..., 1:]
+
+        # Compute per-sample loss only once
+        all_channels = ['chart_understanding', 'flowchart_understanding', 'card_extraction', 
+        'math_problem_judge', 'house_understanding', 'table_understanding', 'image2latex']
+        # Initialize _custom_metrics with all channel keys on the correct device
+
+
+        if channels:
+            # 更新 channel 到索引的映射，确保所有可能的 channels 都被包含
+            for channel in all_channels:
+                if channel not in self._channel_to_idx:
+                    self._channel_to_idx[channel] = len(self._channel_to_idx)
+
+            # 将 channels 转换为索引张量
+            channels_tensor = torch.tensor(
+                [self._channel_to_idx[channel] for channel in channels], device=loss.device
+            )
+
+            # 计算每个样本的损失
+            loss_func = get_loss_func('per-sample-loss')
+            per_sample_loss = loss_func(inputs['input_ids'], outputs, label_bck)  # [batch_size]
+            device = loss.device  # 假设您希望使用 `loss` 所在的设备
+
+            for channel_name in all_channels:
+                metric_key = f'loss_{channel_name}'
+                if metric_key not in self._custom_metrics:
+                    self._custom_metrics[metric_key] = torch.tensor(0.0, device=device)  # 在指定设备上初始化
+            
+            # 累积当前批次中实际存在的 channel 的损失
+            unique_channels = torch.unique(channels_tensor)
+            for channel in unique_channels:
+                mask = channels_tensor == channel
+                channel_loss = per_sample_loss[mask].sum()
+                
+                # 从映射中获取 channel 名称
+                channel_name = [name for name, idx in self._channel_to_idx.items() if idx == channel.item()][0]
+                
+                # 定义该 channel 的指标键
+                metric_key = f'loss_{channel_name}'
+                
+                # 累积损失
+                self._custom_metrics[metric_key] += channel_loss.item() / self.args.gradient_accumulation_steps
+
 
         masks = labels != -100
         acc_strategy = getattr(self.args, 'acc_strategy', 'token')

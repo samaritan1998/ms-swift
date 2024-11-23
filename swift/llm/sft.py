@@ -514,6 +514,9 @@ def trainer_train(
         'log_history': trainer.state.log_history,
         **msg
     }
+    if hasattr(trainer, '_custom_metrics'):
+        run_info.update(trainer._custom_metrics)
+        
     if not args.streaming:
         train_time = get_time_info(trainer.state.log_history, len(train_dataset))
         run_info.update({'train_time': train_time})

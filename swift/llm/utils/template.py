@@ -1850,6 +1850,8 @@ class GLM4VTemplate(GLMTemplate):
             return inputs, {}
         input_ids = inputs['input_ids']
         labels = inputs['labels']
+        channel = example.get('channel', 'defalut')
+        inputs["channel"] = channel
         idx_list = _findall(input_ids, -100)
         if idx_list:
             idx = idx_list[0]
@@ -1870,6 +1872,9 @@ class GLM4VTemplate(GLMTemplate):
     def data_collator(self, batch: List[Dict[str, Any]], padding_to: Optional[int] = None) -> Dict[str, Any]:
         res = super().data_collator(batch, padding_to)
         images = [b['images'] for b in batch if 'images' in b]
+        channels = [b['channel'] for b in batch if b.get('channel') is not None]
+        if len(channels) > 0:
+            res['channels'] = channels
         if images:
             res['images'] = torch.concat(images)
         return res

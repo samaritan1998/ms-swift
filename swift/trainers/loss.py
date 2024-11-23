@@ -3,10 +3,10 @@ from typing import Callable, Optional
 import torch
 from torch.nn import CrossEntropyLoss
 
-
 class LossName:
     long_ce = 'long-ce'
     loss_scale = 'loss-scale'
+    per_sample_loss = 'per-sample-loss'
 
 
 LOSS_MAPPING = {}
@@ -80,6 +80,39 @@ def loss_scale_func(outputs, labels, loss_scale=None, num_items_in_batch=None) -
         # compat transformers>=4.46
         loss = loss.sum() / num_items_in_batch
     return loss
+
+
+@register_loss_func(LossName.per_sample_loss)
+def per_sample_loss_func(input_ids, outputs, labels) -> torch.Tensor:
+    new_labels = []
+    boi_token_id = 151339
+    eoi_token_id = 151340
+
+    for i in range(len(input_ids)):
+        input_id = input_ids[i].tolist()
+        boi_token_pos, eoi_token_pos = input_id.index(boi_token_id), input_id.index(
+            eoi_token_id)
+        assert eoi_token_pos - boi_token_pos == 2
+
+        new_labels.append(torch.cat(
+            (
+                labels[i, :boi_token_pos + 1],
+                torch.tensor([-100]).to(labels.device).to(labels.dtype).repeat(1600),
+                labels[i, eoi_token_pos:])))
+    
+    labels = torch.stack(new_labels, dim=0)
+    lm_logits = outputs['logits']
+    shift_logits = lm_logits[..., :-1, :].contiguous()
+    shift_labels = labels[..., 1:].contiguous()
+    with torch.no_grad():
+        loss_fct = CrossEntropyLoss(ignore_index=-100, reduction="none")
+        loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+        non_ignored_mask = (shift_labels != -100).type_as(loss)
+        loss = loss * non_ignored_mask
+        non_ignored_count = non_ignored_mask.sum(dim=1).clamp(min=1)
+        loss_per_sample = loss.sum(dim=1) / non_ignored_count
+  
+    return loss_per_sample
 
 
 def get_loss_func(loss_name: Optional[str]) -> Optional[Callable]:
